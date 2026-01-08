@@ -59,8 +59,6 @@ except ImportError:
             return []
     cfo_analytics = CFOAnalytics()
 
-# Set OpenAI API key
-openai.api_key = "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"
 
 def create_page(analytics_data: Dict):
     """Create Contract Chatbot page with GraphRAG integration"""
