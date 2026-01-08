@@ -1,0 +1,31 @@
+# Core dependencies
+gradio>=4.0.0
+networkx>=3.0
+pandas>=1.5.0
+matplotlib>=3.5.0
+python-dotenv>=0.19.0
+openai>=1.0.0
+
+# Community detection
+python-louvain>=0.16
+
+# Optional file parsers
+PyPDF2>=3.0.0
+python-docx>=0.8.11
+
+# Optional RDF support
+rdflib>=6.0.0
+
+# Optional vector search
+llama-index>=0.9.0
+llama-index-embeddings-openai>=0.1.0
+llama-index-llms-openai>=0.1.0
+
+# Additional utilities
+numpy>=1.21.0
+scipy>=1.9.0
+
+
+
+
+
