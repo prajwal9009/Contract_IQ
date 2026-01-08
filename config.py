@@ -10,7 +10,52 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # ============ API Configuration ============
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY") or "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"
+# Priority: Streamlit secrets > environment variable > .env file
+OPENAI_API_KEY = None
+
+# Try Streamlit secrets first (for Streamlit Cloud deployment)
+try:
+    import streamlit as st
+    OPENAI_API_KEY = st.secrets.get("OPENAI_API_KEY", None)
+except (AttributeError, KeyError, FileNotFoundError, ImportError):
+    # Streamlit secrets not available, try environment variable
+    pass
+
+# Fallback to environment variable
+if not OPENAI_API_KEY:
+    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
+# Fallback to .env file (for local development)
+if not OPENAI_API_KEY:
+    load_dotenv()
+    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT", "")
+AZURE_OPENAI_API_VERSION = os.getenv("AZURE_OPENAI_API_VERSION", "2025-01-01-preview")
+USE_AZURE_OPENAI = bool(AZURE_OPENAI_ENDPOINT)
+
+if not OPENAI_API_KEY:
+    raise ValueError("OPENAI_API_KEY environment variable is not set. Please set it in your .env file or environment.")
+
+# Azure OpenAI configuration
+if USE_AZURE_OPENAI:
+    # Extract deployment name from endpoint if not provided
+    if "/deployments/" in AZURE_OPENAI_ENDPOINT:
+        parts = AZURE_OPENAI_ENDPOINT.split("/deployments/")
+        AZURE_BASE_URL = parts[0]
+        deployment_part = parts[1].split("/")[0]  # Get just the deployment name, before any /chat/completions
+        if "?" in deployment_part:
+            deployment_part = deployment_part.split("?")[0]
+        AZURE_DEPLOYMENT_NAME = deployment_part
+    else:
+        AZURE_BASE_URL = AZURE_OPENAI_ENDPOINT
+        AZURE_DEPLOYMENT_NAME = os.getenv("AZURE_DEPLOYMENT_NAME", "gpt-4.1")
+    
+    # Remove /openai from base URL if present (Azure OpenAI base URL should not include /openai)
+    if AZURE_BASE_URL.endswith("/openai"):
+        AZURE_BASE_URL = AZURE_BASE_URL[:-7]
+else:
+    AZURE_DEPLOYMENT_NAME = None
+    AZURE_BASE_URL = None
 
 # ============ Optional Dependencies ============
 PDF_AVAILABLE = True

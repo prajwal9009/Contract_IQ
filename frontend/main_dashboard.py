@@ -8,7 +8,19 @@ import pandas as pd
 from typing import Dict
 
 # Import page modules (moved from pages/ to modules/ to disable default navigation)
-from modules import insightiq, portfolio, cashflow, cost_control, executive
+from modules import insightiq, portfolio, cashflow, cost_control, executive, development_centre
+
+# Import from frontend/utils.py (not root utils.py)
+# Fix import conflict: ensure we import from frontend directory, not root
+import sys
+import os
+# Get the directory where this file is located (frontend/)
+current_dir = os.path.dirname(os.path.abspath(__file__))
+# Ensure frontend directory is first in path (before parent directory)
+if current_dir in sys.path:
+    sys.path.remove(current_dir)
+sys.path.insert(0, current_dir)
+# Now import utils (will get frontend/utils.py)
 from utils import load_cfo_analytics_data
 
 # Set page config - CRITICAL: Disable default navigation
@@ -335,6 +347,14 @@ def main():
         st.session_state['current_page'] = "InsightIQ"
     
     # Load analytics data once and cache it
+    # Clear cache if contracts were just uploaded
+    if st.session_state.get('upload_success', False):
+        from utils import load_cfo_jsonl_insights, load_unified_contracts
+        load_cfo_analytics_data.clear()
+        load_cfo_jsonl_insights.clear()  # Also clear insights cache
+        load_unified_contracts.clear()  # Also clear contracts cache
+        st.session_state['upload_success'] = False
+    
     with st.spinner("Loading ContractIQ analytics..."):
         analytics_data = load_cfo_analytics_data("unified")
     
@@ -368,7 +388,8 @@ def main():
         ("💰 Cash Flow Analysis", "Cash Flow Analysis"),
         ("💸 Cost Control & Risk", "Cost Control & Risk Management"),
         ("📈 Executive Insights", "Executive Insights"),
-        ("💬 Talk to Your Contracts", "Contract Chatbot")
+        ("💬 Talk to Your Contracts", "Contract Chatbot"),
+        ("🔧 Development Centre", "Development Centre")
     ]
     
     for button_text, page_name in pages:
@@ -394,6 +415,8 @@ def main():
     elif current_page == "Contract Chatbot":
         from modules import chatbot
         chatbot.create_page(analytics_data)
+    elif current_page == "Development Centre":
+        development_centre.create_page(analytics_data)
 
 if __name__ == "__main__":
     main()

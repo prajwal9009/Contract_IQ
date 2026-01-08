@@ -12,7 +12,11 @@ from datetime import datetime
 
 # Import our CFO analytics modules
 import sys
-sys.path.append('..')
+import os
+# Add parent directory to path (works for both local and Streamlit Cloud)
+parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if parent_dir not in sys.path:
+    sys.path.append(parent_dir)
 
 # Try to import config, if not available create a fallback
 try:
@@ -71,11 +75,18 @@ def load_demo_contracts():
 def load_uploaded_contracts():
     """Load uploaded contracts from Gradio processing"""
     try:
-        if os.path.exists("uploaded_contracts.csv"):
-            uploaded_df = pd.read_csv("uploaded_contracts.csv")
-            return uploaded_df
-        else:
-            return pd.DataFrame()
+        # Check multiple locations for uploaded contracts
+        contract_files = [
+            "uploaded_contracts.csv",  # Current directory
+            "../uploaded_contracts.csv",  # Parent directory
+            os.path.join(os.path.dirname(__file__), "..", "uploaded_contracts.csv"),  # Absolute path
+            os.path.join(os.path.dirname(__file__), "uploaded_contracts.csv")  # Frontend directory
+        ]
+        for contract_file in contract_files:
+            if os.path.exists(contract_file):
+                uploaded_df = pd.read_csv(contract_file)
+                return uploaded_df
+        return pd.DataFrame()
     except Exception as e:
         return pd.DataFrame()
 
@@ -83,32 +94,65 @@ def load_uploaded_contracts():
 def load_unified_contracts():
     """Load unified contracts (dummy + uploaded combined)"""
     try:
-        # Always try uploaded_contracts.csv first (contains dummy + uploaded)
-        if os.path.exists("uploaded_contracts.csv"):
-            unified_df = pd.read_csv("uploaded_contracts.csv")
-            return unified_df
-        elif os.path.exists("dummy_contracts_50.csv"):
-            dummy_df = pd.read_csv("dummy_contracts_50.csv")
-            return dummy_df
-        else:
-            return pd.DataFrame()
+        # Check multiple locations for uploaded contracts first
+        contract_files = [
+            "uploaded_contracts.csv",
+            "../uploaded_contracts.csv",
+            os.path.join(os.path.dirname(__file__), "..", "uploaded_contracts.csv"),
+            os.path.join(os.path.dirname(__file__), "uploaded_contracts.csv")
+        ]
+        for contract_file in contract_files:
+            if os.path.exists(contract_file):
+                unified_df = pd.read_csv(contract_file)
+                return unified_df
+        
+        # Fallback to dummy contracts
+        demo_files = [
+            "dummy_contracts_50.csv",
+            "../dummy_contracts_50.csv",
+            os.path.join(os.path.dirname(__file__), "..", "dummy_contracts_50.csv"),
+            os.path.join(os.path.dirname(__file__), "dummy_contracts_50.csv")
+        ]
+        for demo_file in demo_files:
+            if os.path.exists(demo_file):
+                dummy_df = pd.read_csv(demo_file)
+                return dummy_df
+        
+        return pd.DataFrame()
     except Exception as e:
         return pd.DataFrame()
 
-@st.cache_data
+@st.cache_data(ttl=60)  # Cache for 1 minute to allow faster refresh after uploads
 def load_cfo_jsonl_insights():
-    """Load CFO insights from JSONL file"""
+    """Load CFO insights from JSONL file - checks multiple locations"""
     try:
-        jsonl_file = "../cfo_contract_insights.jsonl"
-        if os.path.exists(jsonl_file):
-            insights = []
-            with open(jsonl_file, 'r', encoding='utf-8') as f:
-                for line in f:
-                    if line.strip():
-                        insights.append(json.loads(line))
-            return insights
+        # Check multiple possible locations (similar to graph context memory)
+        jsonl_files = [
+            "../cfo_contract_insights.jsonl",  # Parent directory (from frontend/)
+            "cfo_contract_insights.jsonl",      # Current directory
+            os.path.join(os.path.dirname(__file__), "..", "cfo_contract_insights.jsonl"),  # Parent directory (absolute)
+            os.path.join(os.path.dirname(os.path.dirname(__file__)), "cfo_contract_insights.jsonl")  # Root directory
+        ]
+        
+        for jsonl_file in jsonl_files:
+            if os.path.exists(jsonl_file):
+                insights = []
+                with open(jsonl_file, 'r', encoding='utf-8') as f:
+                    for line in f:
+                        if line.strip():
+                            try:
+                                insights.append(json.loads(line))
+                            except json.JSONDecodeError:
+                                # Skip invalid JSON lines
+                                continue
+                if insights:
+                    print(f"[Utils] Loaded {len(insights)} CFO insights from {jsonl_file}")
+                    return insights
+        
+        print(f"[Utils] CFO insights file not found in any location")
         return []
     except Exception as e:
+        print(f"[Utils] Error loading CFO insights: {e}")
         return []
 
 def generate_basic_insights_disabled(df: pd.DataFrame) -> Dict:
@@ -119,7 +163,7 @@ def generate_basic_insights_disabled(df: pd.DataFrame) -> Dict:
         "executive_summary": {}
     }
 
-@st.cache_data(ttl=300)  # Cache for 5 minutes to prevent inconsistencies
+@st.cache_data(ttl=60)  # Cache for 1 minute to allow faster refresh after uploads
 def load_cfo_analytics_data(mode="unified"):
     """Load comprehensive CFO analytics data with consistent caching"""
     analytics_data = {

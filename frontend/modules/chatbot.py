@@ -11,8 +11,11 @@ from typing import Dict, List
 import sys
 import openai
 
-# Add parent directory to path for imports
-sys.path.append('..')
+# Add parent directory to path for imports (works for both local and Streamlit Cloud)
+import os
+parent_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if parent_dir not in sys.path:
+    sys.path.append(parent_dir)
 
 # Try to import modules, create fallbacks if not available
 try:
@@ -59,6 +62,35 @@ except ImportError:
             return []
     cfo_analytics = CFOAnalytics()
 
+# Set OpenAI API key from Streamlit secrets or environment variable
+from dotenv import load_dotenv
+
+# Priority: Streamlit secrets > environment variable > .env file
+api_key = None
+
+# Try Streamlit secrets first (for Streamlit Cloud deployment)
+try:
+    api_key = st.secrets.get("OPENAI_API_KEY", None)
+except (AttributeError, KeyError, FileNotFoundError):
+    # Streamlit secrets not available, try environment variable
+    pass
+
+# Fallback to environment variable
+if not api_key:
+    api_key = os.getenv("OPENAI_API_KEY")
+
+# Fallback to .env file (for local development)
+if not api_key:
+    load_dotenv()  # Root directory
+    if not os.getenv("OPENAI_API_KEY"):
+        load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), "..", ".env"))  # Frontend directory
+    api_key = os.getenv("OPENAI_API_KEY")
+
+if not api_key:
+    st.error("⚠️ OPENAI_API_KEY not found. Please set it in Streamlit secrets (for cloud) or .env file (for local).")
+    st.stop()
+
+openai.api_key = api_key
 
 def create_page(analytics_data: Dict):
     """Create Contract Chatbot page with GraphRAG integration"""
@@ -76,15 +108,48 @@ def create_page(analytics_data: Dict):
     if 'graph_context' not in st.session_state:
         st.session_state.graph_context = ""
     
-    # Auto-load graph context if it exists (check parent directory where files are)
-    context_file = "../graph_context_memory.txt"
-    if os.path.exists(context_file) and not st.session_state.graph_ready:
+    # Auto-load graph context if it exists (check multiple locations)
+    # Also reload if file has been updated (check file modification time)
+    context_files = [
+        "../graph_context_memory.txt",  # Parent directory
+        "graph_context_memory.txt",      # Current directory
+        os.path.join(os.path.dirname(__file__), "..", "..", "graph_context_memory.txt")  # Root directory
+    ]
+    
+    # Check if we need to reload (file exists and either not loaded or file was modified)
+    should_reload = False
+    context_file_path = None
+    for context_file in context_files:
+        if os.path.exists(context_file):
+            context_file_path = context_file
+            # Check if file was modified since last load
+            file_mtime = os.path.getmtime(context_file)
+            last_load_time = st.session_state.get('graph_context_mtime', 0)
+            if not st.session_state.graph_ready or file_mtime > last_load_time:
+                should_reload = True
+            break
+    
+    if should_reload and context_file_path:
         try:
-            with open(context_file, 'r', encoding='utf-8') as f:
+            with open(context_file_path, 'r', encoding='utf-8') as f:
                 st.session_state.graph_context = f.read()
             st.session_state.graph_ready = True
-        except Exception:
-            pass
+            st.session_state.graph_context_mtime = os.path.getmtime(context_file_path)
+            print(f"[Chatbot] Reloaded graph context from {context_file_path} ({len(st.session_state.graph_context)} chars)")
+        except Exception as e:
+            print(f"[Chatbot] Error loading graph context: {e}")
+    elif not st.session_state.graph_ready:
+        # Try to load for the first time
+        for context_file in context_files:
+            if os.path.exists(context_file):
+                try:
+                    with open(context_file, 'r', encoding='utf-8') as f:
+                        st.session_state.graph_context = f.read()
+                    st.session_state.graph_ready = True
+                    st.session_state.graph_context_mtime = os.path.getmtime(context_file)
+                    break
+                except Exception:
+                    continue
     
     # Check if graph is already processed
     col1, col2 = st.columns([2, 1])
@@ -92,16 +157,22 @@ def create_page(analytics_data: Dict):
     with col1:
         st.markdown("### 🤖 Contract Intelligence Assistant")
         
-        # Check if graph context memory exists
-        context_file = "../graph_context_memory.txt"
+        # Check if graph context memory exists (check multiple locations)
+        context_files = [
+            "../graph_context_memory.txt",
+            "graph_context_memory.txt",
+            os.path.join(os.path.dirname(__file__), "..", "..", "graph_context_memory.txt")
+        ]
         
-        if os.path.exists(context_file) and st.session_state.graph_ready:
+        context_found = any(os.path.exists(f) for f in context_files)
+        
+        if context_found and st.session_state.graph_ready:
             st.success("✅ Knowledge graph ready! You can now ask questions about your contracts.")
-        elif os.path.exists(context_file):
+        elif context_found:
             st.info("🔄 Loading knowledge graph context...")
             st.rerun()
         else:
-            st.warning("⚠️ No knowledge graph context found. Please run the contract processing pipeline first.")
+            st.info("ℹ️ Using contract data analysis. Graph context will enhance answers when available.")
             if st.button("🔄 Check for Graph Context", type="secondary"):
                 st.rerun()
     
@@ -183,54 +254,106 @@ def create_page(analytics_data: Dict):
 def build_knowledge_graph(analytics_data: Dict) -> bool:
     """Load existing knowledge graph from processed context memory"""
     try:
-        # Check if graph context memory file exists (parent directory)
-        context_file = "../graph_context_memory.txt"
+        # Check multiple locations for graph context
+        context_files = [
+            "../graph_context_memory.txt",  # Parent directory
+            "graph_context_memory.txt",      # Current directory
+            os.path.join(os.path.dirname(__file__), "..", "..", "graph_context_memory.txt")  # Root directory
+        ]
         
-        if os.path.exists(context_file):
-            with open(context_file, 'r', encoding='utf-8') as f:
-                context_memory = f.read()
-            
-            st.session_state.graph_context = context_memory
-            return True
-        else:
-            st.error("Graph context memory not found. Please run the contract processing pipeline first.")
-            return False
+        for context_file in context_files:
+            if os.path.exists(context_file):
+                try:
+                    with open(context_file, 'r', encoding='utf-8') as f:
+                        context_memory = f.read()
+                    
+                    if context_memory and context_memory.strip():
+                        st.session_state.graph_context = context_memory
+                        st.session_state.graph_ready = True
+                        return True
+                except Exception:
+                    continue
+        
+        # If no context found, that's okay - chatbot can still work with CSV data
+        st.info("ℹ️ Graph context not found. Chatbot will use contract data analysis.")
+        return False
         
     except Exception as e:
-        st.error(f"Error loading knowledge graph: {str(e)}")
+        st.warning(f"Note: Could not load graph context: {str(e)}. Chatbot will use contract data.")
         return False
 
 def generate_ai_response(prompt: str, analytics_data: Dict) -> str:
-    """Generate AI response using Graph Context + CSV Analysis + OpenAI API"""
+    """Generate AI response using Graph Context + Cluster Summaries + CSV Analysis + OpenAI API"""
     try:
-        # Get all available data sources
+        # Get all available data sources in priority order
         graph_context = st.session_state.get('graph_context', '')
+        
+        # Get cluster summaries from file or config (priority: file > config)
+        cluster_summaries = {}
+        try:
+            # Try to load from file first (most up-to-date)
+            cluster_files = [
+                "../cluster_summaries.json",
+                "cluster_summaries.json",
+                os.path.join(os.path.dirname(__file__), "..", "..", "cluster_summaries.json")
+            ]
+            for cluster_file in cluster_files:
+                if os.path.exists(cluster_file):
+                    try:
+                        with open(cluster_file, 'r', encoding='utf-8') as f:
+                            cluster_summaries = json.load(f)
+                        break
+                    except Exception:
+                        continue
+            
+            # Fallback to config if file not found
+            if not cluster_summaries:
+                if hasattr(config, 'CLUSTER_SUMMARIES') and config.CLUSTER_SUMMARIES:
+                    cluster_summaries = config.CLUSTER_SUMMARIES
+        except Exception as e:
+            print(f"[Chatbot] Error loading cluster summaries: {e}")
+            pass
+        
         df = analytics_data.get("contract_csv", pd.DataFrame())
         
         if df.empty:
-            return "No contract data available. Please check your data sources."
+            return "❌ No contract data available. Please upload contracts in the Development Centre first."
         
         # Generate comprehensive CSV analysis
         csv_analysis = generate_comprehensive_csv_analysis(df, prompt)
         
-        # Combine all context for OpenAI
-        combined_context = build_combined_context(graph_context, csv_analysis, prompt)
+        if not csv_analysis or not csv_analysis.strip():
+            return "❌ Unable to analyze contract data. Please check your data sources."
+        
+        # Combine all context for OpenAI (priority: Graph Context → Cluster Summaries → CSV)
+        combined_context = build_combined_context(graph_context, cluster_summaries, csv_analysis, prompt)
         
         # Use OpenAI API for intelligent response
-        response = generate_openai_response(prompt, combined_context)
+        try:
+            response = generate_openai_response(prompt, combined_context)
+            if response and response.strip():
+                return response
+            else:
+                # If OpenAI returns empty, fall back to CSV analysis
+                st.warning("⚠️ OpenAI returned empty response, using CSV analysis")
+                return generate_simple_csv_response(prompt, df)
+        except Exception as openai_error:
+            # If OpenAI fails, use CSV analysis as fallback
+            error_msg = str(openai_error)
+            st.warning(f"⚠️ OpenAI API error: {error_msg[:100]}... Using CSV analysis as fallback.")
+            print(f"[Chatbot] OpenAI error: {error_msg}")
+            return generate_simple_csv_response(prompt, df)
         
-        return response
-    
     except Exception as e:
-        # Fallback to simple CSV analysis if OpenAI fails
+        # Final fallback to simple CSV analysis
         try:
             df = analytics_data.get("contract_csv", pd.DataFrame())
             if not df.empty:
                 return generate_simple_csv_response(prompt, df)
             else:
-                return f"I encountered an error while processing your question: {str(e)}. Please try rephrasing your question or contact support."
+                return f"❌ I encountered an error: {str(e)}. Please try rephrasing your question or upload contracts first."
         except Exception as e2:
-            return f"I encountered an error while processing your question: {str(e)}. Please try rephrasing your question or contact support."
+            return f"❌ I encountered an error: {str(e)}. Please try rephrasing your question."
 
 def generate_comprehensive_csv_analysis(df: pd.DataFrame, prompt: str) -> str:
     """Generate comprehensive CFO-level CSV analysis based on the question"""
@@ -361,87 +484,171 @@ def generate_comprehensive_csv_analysis(df: pd.DataFrame, prompt: str) -> str:
     except Exception as e:
         return f"Error in CSV analysis: {str(e)}"
 
-def build_combined_context(graph_context: str, csv_analysis: str, prompt: str) -> str:
-    """Build combined context prioritizing CSV data (primary) + Graph context (insights)"""
+def build_combined_context(graph_context: str, cluster_summaries: dict, csv_analysis: str, prompt: str) -> str:
+    """Build combined context with correct priority: Graph Context → Cluster Summaries → CSV
+    Limits context size to avoid OpenAI capacity issues"""
     context_parts = []
     
-    # PRIORITY 1: CSV Analysis (Primary Data Source)
-    if csv_analysis and csv_analysis.strip():
-        context_parts.append(f"PRIMARY DATA SOURCE - CONTRACT CSV ANALYSIS:\n{csv_analysis}")
-    
-    # PRIORITY 2: Graph Context (For Deeper Insights)
+    # PRIORITY 1: Graph Context (Primary - Deepest Insights) - Limit to 2000 chars
     if graph_context and graph_context.strip():
-        context_parts.append(f"SECONDARY INSIGHTS - KNOWLEDGE GRAPH CONTEXT:\n{graph_context}")
+        graph_truncated = graph_context[:2000] if len(graph_context) > 2000 else graph_context
+        if len(graph_context) > 2000:
+            graph_truncated += "\n[... graph context truncated to avoid capacity limits ...]"
+        context_parts.append(f"PRIMARY - KNOWLEDGE GRAPH CONTEXT (Deep Insights):\n{graph_truncated}")
+    
+    # PRIORITY 2: Cluster Summaries (Secondary - Risk & KPI Insights) - Limit to 1500 chars
+    if cluster_summaries:
+        cluster_text = []
+        for cid in sorted(cluster_summaries.keys()):
+            summary_data = cluster_summaries[cid]
+            label = summary_data.get("KPI/Risk Label", f"Cluster {cid}")
+            summary = summary_data.get("Cluster Summary", "No summary available.")
+            cluster_text.append(f"Cluster {cid} - {label}:\n{summary}")
+        
+        cluster_str = "\n\n".join(cluster_text)
+        cluster_truncated = cluster_str[:1500] if len(cluster_str) > 1500 else cluster_str
+        if len(cluster_str) > 1500:
+            cluster_truncated += "\n[... cluster summaries truncated to avoid capacity limits ...]"
+        context_parts.append(f"SECONDARY - CLUSTER SUMMARIES (Risk & KPI Insights):\n{cluster_truncated}")
+    
+    # PRIORITY 3: CSV Analysis (Tertiary - Structured Data) - Limit to 2000 chars
+    if csv_analysis and csv_analysis.strip():
+        csv_truncated = csv_analysis[:2000] if len(csv_analysis) > 2000 else csv_analysis
+        if len(csv_analysis) > 2000:
+            csv_truncated += "\n[... CSV analysis truncated to avoid capacity limits ...]"
+        context_parts.append(f"TERTIARY - CONTRACT CSV ANALYSIS (Structured Data):\n{csv_truncated}")
     
     # Add direct analysis instructions
     context_parts.append("""
 ANALYSIS INSTRUCTIONS:
-- PRIORITIZE CSV DATA: Use exact numbers, dates, and contract details from the CSV analysis above
+- PRIORITY ORDER: Use Graph Context first (deepest insights), then Cluster Summaries (risk/KPI insights), then CSV data (structured facts)
 - BE DIRECT: Answer the specific question asked, no extra analysis unless requested
 - FORMAT: Use bullet points (•) for clarity
 - BE SPECIFIC: Include exact dollar amounts, contract counts, vendor names, and dates
+- USE ALL SOURCES: Combine insights from graph context, cluster summaries, and CSV data when relevant
 - NO AUTO-RISK ASSESSMENT: Only provide risk/opportunity analysis when specifically asked
 - FINANCIAL ACCURACY: All financial figures must be precise and properly formatted
 """)
     
-    return "\n\n".join(context_parts)
+    combined = "\n\n".join(context_parts)
+    
+    # Final safety check - limit total context to 4000 chars to allow for all sources
+    if len(combined) > 4000:
+        combined = combined[:4000] + "\n[... context truncated to avoid capacity limits ...]"
+    
+    return combined
 
 def generate_openai_response(prompt: str, context: str) -> str:
-    """Generate CFO-level response using CSV data (priority) + Graph context for insights"""
+    """Generate CFO-level response using CSV data (priority) + Graph context for insights
+    Uses standard OpenAI API (not Azure)"""
     try:
+        # Use standard OpenAI only (no Azure)
         from openai import OpenAI
+        # Always read API key from Streamlit secrets or environment variable
+        current_api_key = None
         
-        client = OpenAI(api_key=openai.api_key)
+        # Try Streamlit secrets first (for Streamlit Cloud)
+        try:
+            current_api_key = st.secrets.get("OPENAI_API_KEY", None)
+        except (AttributeError, KeyError, FileNotFoundError):
+            pass
+        
+        # Fallback to environment variable
+        if not current_api_key:
+            current_api_key = os.getenv("OPENAI_API_KEY")
+        
+        # Fallback to .env file (for local development)
+        if not current_api_key:
+            load_dotenv()
+            if not os.getenv("OPENAI_API_KEY"):
+                load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), "..", ".env"))
+            current_api_key = os.getenv("OPENAI_API_KEY")
+        
+        if not current_api_key:
+            error_msg = "OPENAI_API_KEY not found. Please set it in Streamlit secrets (for cloud) or .env file (for local)."
+            st.error(f"⚠️ {error_msg}")
+            raise ValueError(error_msg)
+        
+        # Debug: Log that we're using the API key (first 10 chars only for security)
+        if st.session_state.get('debug_mode', False):
+            st.info(f"🔑 Using OpenAI API key: {current_api_key[:10]}...")
+        
+        client = OpenAI(api_key=current_api_key)
+        model_name = "gpt-4"  # Use GPT-4.1 series for better quality
         
         messages = [
             {
                 "role": "system",
-                "content": """You are a direct, efficient CFO contract analyst assistant. Provide straightforward answers based on contract data.
+                "content": """You are a direct, efficient CFO contract analyst assistant. Provide comprehensive answers using all available data sources.
 
-CRITICAL INSTRUCTIONS:
-1. PRIORITIZE CSV DATA - Use exact numbers, dates, and contract details from CSV analysis.
-2. BE DIRECT - Answer the specific question asked, no extra fluff.
-3. FORMAT: Use bullet points (•) for clarity and easy scanning.
-4. BE SPECIFIC: Include exact dollar amounts, contract counts, vendor names, and dates.
-5. ONLY PROVIDE RISK/OPPORTUNITY ANALYSIS when explicitly asked about "risk", "opportunities", or "assessment".
+CRITICAL INSTRUCTIONS - DATA SOURCE PRIORITY:
+1. GRAPH CONTEXT (Primary) - Use deep insights from knowledge graph relationships and patterns
+2. CLUSTER SUMMARIES (Secondary) - Use risk/KPI insights from contract clusters
+3. CSV DATA (Tertiary) - Use exact numbers, dates, and contract details for factual accuracy
+
+RESPONSE REQUIREMENTS:
+1. BE COMPREHENSIVE - Combine insights from all available sources (graph, clusters, CSV)
+2. BE DIRECT - Answer the specific question asked, no extra fluff
+3. FORMAT: Use bullet points (•) for clarity and easy scanning
+4. BE SPECIFIC: Include exact dollar amounts, contract counts, vendor names, and dates
+5. USE GRAPH INSIGHTS: When graph context is available, use it to provide deeper analysis
+6. USE CLUSTER INSIGHTS: When cluster summaries are available, reference relevant risks/KPIs
+7. ONLY PROVIDE RISK/OPPORTUNITY ANALYSIS when explicitly asked about "risk", "opportunities", or "assessment"
 
 RESPONSE STYLE:
 • Straightforward answers to the question asked
 • Use bullet points (•) for key findings
 • Include exact financial figures ($X,XXX,XXX)
 • Mention specific vendor names and contract IDs when relevant
+• Combine graph insights with CSV data for comprehensive answers
+• Reference cluster summaries when discussing risks or KPIs
 • NO automatic risk assessments unless specifically requested
 • NO strategic recommendations unless asked for
 
-Focus on answering the specific question with accurate data from the CSV analysis."""
+Focus on answering the specific question using ALL available data sources in priority order."""
             },
             {
                 "role": "user",
-                "content": f"""CONTRACT DATA ANALYSIS (CSV - PRIMARY SOURCE):
+                "content": f"""CONTRACT DATA ANALYSIS (Multiple Sources - Priority: Graph → Clusters → CSV):
 {context}
 
 QUESTION: {prompt}
 
-Provide a direct answer with:
-• Specific numbers and financial figures from the CSV data
-• Exact contract details, vendor names, and dates
+Provide a comprehensive answer using:
+• Graph context insights (if available) for deep analysis
+• Cluster summaries (if available) for risk/KPI insights
+• CSV data for exact numbers, dates, and contract details
 • Clear bullet points for easy reading
 
-Answer only what was asked - be direct and specific."""
+Answer the question comprehensively using all available sources - be direct and specific."""
             }
         ]
         
+        # Optimized for GPT-4.1 series - single request for quality responses
         response = client.chat.completions.create(
-            model="gpt-4",
+            model=model_name,
             messages=messages,
-            max_tokens=1500,
-            temperature=0.2
+            max_tokens=1200,  # Increased for GPT-4.1 quality responses
+            temperature=0.2,
+            timeout=30  # 30 second timeout for GPT-4.1 processing
         )
-        
-        return response.choices[0].message.content.strip()
+                
+        # Validate response
+        if response and response.choices and len(response.choices) > 0:
+            content = response.choices[0].message.content
+            if content and content.strip():
+                return content.strip()
+            else:
+                raise ValueError("Empty response from OpenAI")
+        else:
+            raise ValueError("Invalid response from OpenAI")
     
     except Exception as e:
-        return f"Error generating OpenAI response: {str(e)}. Please try again."
+        error_msg = str(e)
+        # Log error for debugging
+        print(f"[Chatbot OpenAI Error] {error_msg}")
+        # Re-raise to be caught by outer handler (will trigger CSV fallback)
+        raise Exception("Unable to generate AI response. Using contract data analysis instead.")
 
 def generate_simple_csv_response(prompt: str, df: pd.DataFrame) -> str:
     """Simple fallback response using CSV data when OpenAI fails"""
@@ -472,12 +679,19 @@ def generate_simple_csv_response(prompt: str, df: pd.DataFrame) -> str:
             else:
                 return "No contracts are expiring in the next 6 months."
         
-        elif "ibm" in prompt_lower and "timeline" in prompt_lower:
+        elif "ibm" in prompt_lower:
             ibm_contracts = df_clean[df_clean['counterparty'].str.contains('IBM', case=False, na=False)]
             if not ibm_contracts.empty:
-                response = f"IBM Contract Timeline:\n"
+                total_value = ibm_contracts['total_value_usd'].sum()
+                total_annual = ibm_contracts['annual_commitment_usd'].sum()
+                response = f"IBM Contracts Overview:\n"
+                response += f"• Contract Count: {len(ibm_contracts)}\n"
+                response += f"• Total Value: ${total_value:,.0f}\n"
+                response += f"• Annual Commitment: ${total_annual:,.0f}\n"
+                response += f"• Portfolio Share: {(total_value / df_clean['total_value_usd'].sum()) * 100:.1f}%\n\n"
+                response += f"Contract Timeline:\n"
                 for _, contract in ibm_contracts.iterrows():
-                    response += f"- {contract['contract_id']}: {contract['start_date']} to {contract['end_date']} (${contract['annual_commitment_usd']:,.0f}/yr)\n"
+                    response += f"• {contract['contract_id']}: {contract['start_date']} to {contract['end_date']} (${contract['annual_commitment_usd']:,.0f}/yr) - {contract.get('status', 'N/A')}\n"
                 return response
             else:
                 return "No IBM contracts found in the portfolio."
@@ -494,7 +708,27 @@ def generate_simple_csv_response(prompt: str, df: pd.DataFrame) -> str:
             return f"You have {len(penalty_contracts)} contracts with SLA penalty clauses, representing ${penalty_contracts['total_value_usd'].sum():,.0f} in total contract value at risk."
         
         else:
-            return f"Based on analysis of your {len(df_clean)} contracts, I can provide insights about payment terms, renewals, vendor relationships, SLA requirements, and financial metrics. Please ask a more specific question."
+            # Try to provide a general answer based on the prompt keywords
+            response_parts = []
+            response_parts.append(f"Based on analysis of your {len(df_clean)} contracts:\n")
+            
+            # Check for vendor mentions
+            for vendor in ['IBM', 'Microsoft', 'Oracle', 'SAP', 'Salesforce', 'HCL', 'Infosys', 'Alpha']:
+                if vendor.lower() in prompt_lower:
+                    vendor_contracts = df_clean[df_clean['counterparty'].str.contains(vendor, case=False, na=False)]
+                    if not vendor_contracts.empty:
+                        response_parts.append(f"• {vendor} Contracts: {len(vendor_contracts)} contracts, ${vendor_contracts['total_value_usd'].sum():,.0f} total value")
+            
+            # Check for contract-related keywords
+            if any(word in prompt_lower for word in ['contract', 'agreement', 'deal']):
+                total_value = df_clean['total_value_usd'].sum()
+                response_parts.append(f"• Total Portfolio Value: ${total_value:,.0f}")
+                response_parts.append(f"• Active Contracts: {len(df_clean[df_clean['status'].str.contains('Active', na=False)])}")
+            
+            if response_parts:
+                return "\n".join(response_parts)
+            else:
+                return f"Based on analysis of your {len(df_clean)} contracts, I can provide insights about payment terms, renewals, vendor relationships, SLA requirements, and financial metrics. Please ask a more specific question or mention a vendor name, contract type, or metric you're interested in."
     
     except Exception as e:
         return f"Error in simple analysis: {str(e)}. Please try a different question."
